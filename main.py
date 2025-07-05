@@ -13,12 +13,16 @@ from collections import deque
 # in‑memory log buffer
 log_buffer = deque(maxlen=100)
 
+# money count variable
+global_money = 0
+
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    # show last 100 log lines
-    return "<h1>Game Client Running</h1><pre>{}</pre>".format(
+    # display current money count and last 100 log lines
+    return "<h1>Money: {}</h1><pre>{}</pre>".format(
+        global_money,
         "\n".join(log_buffer)
     )
 
@@ -88,6 +92,36 @@ def hex_recv(sock, expect_len=4096, label=None) -> bytes:
         raise ConnectionError("Server closed connection")
     h = binascii.hexlify(data).decode()
     print(f"← {label or 'Received'} ({len(data)}B): {h}")
+    return data
+
+
+# Special hex_recv for Map Data that updates money_count
+def hex_recv_map_data(sock, expect_len=4096) -> bytes:
+    global global_money
+    data = sock.recv(expect_len)
+    if not data:
+        raise ConnectionError("Server closed connection")
+    h = binascii.hexlify(data).decode()
+    print(f"← MONEY IS HERE ({len(data)}B): {h}")
+
+    # use provided find_hex_number logic
+    identifier = "060162"
+    # Find first occurrence
+    first_pos = h.find(identifier)
+    # Find second occurrence by starting search after first occurrence
+    pos = h.find(identifier, first_pos + 1)
+    print("FOUND SOME POS",pos)
+    if pos != -1:
+        # Move forward 74 characters from the START of second identifier
+        target_pos = pos + 70
+        print("So we FOUND FROM", h[pos:pos+84])
+        # Extract 8 characters from that position
+        hex_number = h[target_pos:target_pos+8]
+        try:
+            global_money = int(hex_number, 16)
+            log(f"[+] Updated money_count: {global_money}")
+        except ValueError:
+            pass
     return data
 
 
@@ -304,15 +338,15 @@ def main(port):
         send_and_log("00060001", "Enter World")
         send_and_log(char_id_hex, "Character ID")
     
-        #    → server: “00000fd7…” (big map blob)
-        hex_recv(s, label="Map Data")
+        #    moneyyyyyy
+        hex_recv_map_data(s)
     
         # 6) Post‐Map: “000623f3” + <char_id_hex>
         send_and_log("000623f3", "Post-Map")
         send_and_log(char_id_hex, "Character ID Repeat")
     
         #    → server: “0000004323f300…” (world sync)
-        hex_recv(s, label="World Sync")
+        hex_recv_map_data(s)
     
         # 7) Four movement‐handshake packets + “00026002”
         for step in ["00023300", "00023303", "00023300", "00023303"]:
@@ -320,7 +354,7 @@ def main(port):
         send_and_log("00026002", "Movement Step")
     
         #    → server: movement sync
-        hex_recv(s, label="Movement Sync")
+        hex_recv_map_data(s)
     
         # 8) Presence start: “001bb300” + 24 zeros
         send_and_log("001bb300", "Presence Start")
@@ -387,6 +421,7 @@ def main(port):
                     hex_recv(s, label="Potion-ACK")
             if count % 100 == 0:
                 drain_socket(s)
+                total_earned = 0
                 inventory = get_inventory_items(s)
                 fur_id = inventory["fur"]["id"]
                 try:
@@ -404,22 +439,30 @@ def main(port):
                 if fur_id:
                     hex_send(s, "000b210100000001" + fur_id + fur_qty_hex, "Sell Fur")
                     hex_recv(s, label="Sell fur -ACK Must be 3210100")
+                    total_earned += 6300 * inventory["fur"]["qty"]
     
                 if claw_id:
                     hex_send(s, "000b210100000001" + claw_id + claw_qty_hex, "Sell Claw")
                     hex_recv(s, label="Sell claw -ACK Must be 3210100")
+                    total_earned += 57000 * inventory["claw"]["qty"]
     
                 if sword_id:
                     hex_send(s, "000b210100000001" + sword_id + "01", "Sell Sword")
                     hex_recv(s, label="Sell sword -ACK Must be 3210100")
+                    total_earned += 10000
+
     
                 hex_send(s, "000b2100000000010000243e19" , "Buy 25 dangos")
                 hex_recv(s, label="Buy 25 dangos")
+                global global_money
+                global_money += total_earned
+                global_money -= 62500
                 log(f"Sold fur: {fur_qty_hex}  \n Sold claw: {claw_qty_hex} ")
                 log(f"Current Dango Amount:  {inventory['dango']['qty']}  ")
+                log(f"[+] Updated money_count from sales: {global_money}")
     
             cerbera_battle(s)
-            log(f"Battle Number: {count}  Finished")
+            print(f"Battle Number: {count}  Finished")
     finally:
         print(f"[i] Closing socket for port {port}")
         s.close()
