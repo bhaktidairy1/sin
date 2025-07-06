@@ -21,7 +21,7 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     # display current money count and last 100 log lines
-    return "<h1>Money: {}</h1><pre>{}</pre>".format(
+    return "<h1>Kit Money: {}</h1><pre>{}</pre>".format(
         global_money,
         "\n".join(log_buffer)
     )
@@ -49,7 +49,7 @@ CURRENT_COORDS = "00060101" + "55003800"
 # === LOGIN TOKEN HANDLING ===
 session = requests.Session()
 mageurl = (
-"https://gae4php82-real.an.r.appspot.com/_ah/login?continue=https://gae4php82-real.an.r.appspot.com/authcreate&auth=g.a000xwjkCMzLFzTzfsu7aocrm98bUO7slA2yh_gzzmv1M02NHbTX3vEXRyR9NylbxlxrA4NLmgACgYKAWwSARESFQHGX2Mio--UZkeB8_bzQsKALPaCqRoVAUF8yKreLEWyGt9tDdY_UZGMNeJ_0076"
+    "https://gae4php82-real.an.r.appspot.com/_ah/login?continue=https://gae4php82-real.an.r.appspot.com/authcreate&auth=g.a000xwjkCMzLFzTzfsu7aocrm98bUO7slA2yh_gzzmv1M02NHbTX3vEXRyR9NylbxlxrA4NLmgACgYKAWwSARESFQHGX2Mio--UZkeB8_bzQsKALPaCqRoVAUF8yKreLEWyGt9tDdY_UZGMNeJ_0076"
 )
 session.get(mageurl, allow_redirects=True)
 base = f"{urlparse(mageurl).scheme}://{urlparse(mageurl).netloc}"
@@ -93,7 +93,6 @@ def hex_recv(sock, expect_len=4096, label=None) -> bytes:
     h = binascii.hexlify(data).decode()
     print(f"← {label or 'Received'} ({len(data)}B): {h}")
     return data
-
 
 # Special hex_recv for Map Data that updates money_count
 def hex_recv_map_data(sock, expect_len=4096) -> bytes:
@@ -144,34 +143,48 @@ def hex_send_NOPRINT(sock, hexstr: str, label=None):
     raw = binascii.unhexlify(hexstr)
     sock.sendall(raw)
     #print(f"→ {label or 'Sent'}: {hexstr}")
+    
 
 def get_inventory_items(sock) -> dict:
     """
-    Sends inventory request, parses response, and returns a dictionary
-    mapping item names to actual Item ID (middle 4 bytes) and quantity.
+    Sends inventory request, then ALWAYS does a Buy‑25‑dangos to
+    get the freshest inventory blob. Parses and returns the item dict.
     """
-
+    # 1) Ask for inventory
     hex_send(sock, "00020120", "Inventory")
-    data = hex_recv(sock, label="Current Inventory")
+    inv_blob = hex_recv(sock, label="Current Inventory")
 
+    # 2) Regardless, buy 25 dangos and parse *that* blob
+    hex_send(sock, "000b2100000000010000243e19", "Buy 25 dangos")
+    buy_blob = hex_recv(sock, label="Buy 25 dangos")
+
+    # 3) Check if buy_blob has relevant item prefixes
+    prefixes = ["243e", "2ac6", "2ac7", "0fcf"]
+    buy_hex = buy_blob.hex()
+    if any(p in buy_hex for p in prefixes):
+        data = buy_blob
+        log("[+] Using buy_blob for inventory.")
+    else:
+        data = inv_blob
+        log("[+] Using inv_blob for inventory fallback.")
+
+    # 4) Extract items
     prefix_to_key = {
         "243e": "dango",
         "2ac6": "fur",
         "2ac7": "claw",
-        "0fcf": "sword"
+        "0fcf": "sword",
     }
-
-    # Prepare result structure
     itemList = {name: {"id": None, "qty": 0} for name in prefix_to_key.values()}
-
     results = extract_multiple_items_info(data, list(prefix_to_key.keys()))
-
     for prefix, item_id, qty in results:
-        key = prefix_to_key.get(prefix)
+        key = prefix_to_key[prefix]
         if itemList[key]["id"] is None:
             itemList[key] = {"id": item_id, "qty": qty}
 
     return itemList
+
+
 
 def cerbera_battle(s):
     try:
@@ -338,14 +351,14 @@ def main(port):
         send_and_log("00060001", "Enter World")
         send_and_log(char_id_hex, "Character ID")
     
-        #    moneyyyyyy
+        #    money
         hex_recv_map_data(s)
     
         # 6) Post‐Map: “000623f3” + <char_id_hex>
         send_and_log("000623f3", "Post-Map")
         send_and_log(char_id_hex, "Character ID Repeat")
     
-        #    → server: “0000004323f300…” (world sync)
+        #   money again
         hex_recv_map_data(s)
     
         # 7) Four movement‐handshake packets + “00026002”
@@ -354,7 +367,7 @@ def main(port):
         send_and_log("00026002", "Movement Step")
     
         #    → server: movement sync
-        hex_recv_map_data(s)
+        hex_recv(s, label="Movement Sync")
     
         # 8) Presence start: “001bb300” + 24 zeros
         send_and_log("001bb300", "Presence Start")
@@ -439,21 +452,20 @@ def main(port):
                 if fur_id:
                     hex_send(s, "000b210100000001" + fur_id + fur_qty_hex, "Sell Fur")
                     hex_recv(s, label="Sell fur -ACK Must be 3210100")
-                    total_earned += 6300 * inventory["fur"]["qty"]
+                    total_earned += 6300 * int(fur_qty_hex, 16)
     
                 if claw_id:
                     hex_send(s, "000b210100000001" + claw_id + claw_qty_hex, "Sell Claw")
                     hex_recv(s, label="Sell claw -ACK Must be 3210100")
-                    total_earned += 57000 * inventory["claw"]["qty"]
+                    total_earned += 57000 * int(claw_qty_hex, 16)
     
                 if sword_id:
                     hex_send(s, "000b210100000001" + sword_id + "01", "Sell Sword")
                     hex_recv(s, label="Sell sword -ACK Must be 3210100")
-                    total_earned += 10000
+                    total_earned += 100000
 
     
-                hex_send(s, "000b2100000000010000243e19" , "Buy 25 dangos")
-                hex_recv(s, label="Buy 25 dangos")
+                #already bought 25 dango
                 global global_money
                 global_money += total_earned
                 global_money -= 62500
