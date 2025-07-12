@@ -212,6 +212,8 @@ def cerbera_battle(s):
             print(f"[+] Parsed boss_id (fallback): {boss_id}")
         else:
             print("[-] Couldn't find boss_id, skipping attack")
+            print(payload)
+            time.sleep(30)
             raise SystemExit
         #time.sleep(0.1)   todo IS THIS SPEED UP FINE?
         # 4) Attack
